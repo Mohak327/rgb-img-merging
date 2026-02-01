@@ -265,16 +265,16 @@ if __name__ == "__main__":
     OUTPUT_DIR = "output"
     
     # Example 1: Process everything in the folder
-    # aligner.batch_process(IMAGES_DIR, OUTPUT_DIR)
+    aligner.batch_process(IMAGES_DIR, OUTPUT_DIR)
     
     # Example 2: Process a specific limited array of images
-    subset = ["melons.tif"] # Add more filenames here as needed
+    # subset = ["melons.tif"] # Add more filenames here as needed
     
-    if os.path.exists(IMAGES_DIR):
-        aligner.batch_process(IMAGES_DIR, OUTPUT_DIR, file_list=subset)
-    else:
-        # Fallback for root-level emir.tif if folder doesn't exist
-        if os.path.exists("emir.tif"):
-            aligner.process("emir.tif", "emir_restored.jpg")
-        else:
-            print(f"Directory '{IMAGES_DIR}' not found.")
+    # if os.path.exists(IMAGES_DIR):
+    #     aligner.batch_process(IMAGES_DIR, OUTPUT_DIR, file_list=subset)
+    # else:
+    #     # Fallback for root-level emir.tif if folder doesn't exist
+    #     if os.path.exists("emir.tif"):
+    #         aligner.process("emir.tif", "emir_restored.jpg")
+    #     else:
+    #         print(f"Directory '{IMAGES_DIR}' not found.")
