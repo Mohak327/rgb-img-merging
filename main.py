@@ -1,480 +1,174 @@
-import cv2
 import numpy as np
 import os
 import glob
 import logging
-from typing import Tuple, Optional, List
-from pathlib import Path
+from typing import Tuple
+from PIL import Image
+from scipy import ndimage
+from scipy.ndimage import zoom
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ProkudinGorskiiAligner:
-    """
-    A class to automate the alignment and restoration of Prokudin-Gorskii 
-    triple-exposure glass plates using multi-scale pyramid alignment and 
-    advanced image enhancement (Bells & Whistles).
-    """
-    def __init__(
-        self,
-        search_range: int = 15,
-        pyramid_depth: int = 5,
-        crop_ratio: float = 0.15,
-        border_threshold_ratio: float = 0.1,
-        contrast_low_percentile: float = 2.0,
-        contrast_high_percentile: float = 98.0,
-        min_pyramid_size: int = 128
-    ) -> None:
-        """Initialize aligner with configurable parameters.
-        
-        Args:
-            search_range: Range for exhaustive search (±pixels)
-            pyramid_depth: Number of pyramid levels for coarse-to-fine alignment
-            crop_ratio: Ratio of border to crop during alignment scoring
-            border_threshold_ratio: Max ratio of image to search for border removal
-            contrast_low_percentile: Lower percentile for contrast stretching
-            contrast_high_percentile: Upper percentile for contrast stretching
-            min_pyramid_size: Minimum image dimension before stopping pyramid descent
-        
-        Raises:
-            ValueError: If parameters are out of valid ranges
-        """
-        if search_range <= 0:
-            raise ValueError(f"search_range must be positive, got {search_range}")
-        if pyramid_depth < 0:
-            raise ValueError(f"pyramid_depth must be non-negative, got {pyramid_depth}")
-        if not 0 < crop_ratio < 0.5:
-            raise ValueError(f"crop_ratio must be in (0, 0.5), got {crop_ratio}")
-        if not 0 < border_threshold_ratio < 0.5:
-            raise ValueError(f"border_threshold_ratio must be in (0, 0.5), got {border_threshold_ratio}")
-        if not 0 < contrast_low_percentile < contrast_high_percentile < 100:
-            raise ValueError("Percentiles must satisfy 0 < low < high < 100")
-        if min_pyramid_size <= 0:
-            raise ValueError(f"min_pyramid_size must be positive, got {min_pyramid_size}")
-            
+    def __init__(self, search_range: int = 15, pyramid_depth: int = 5):
         self.search_range = search_range
         self.pyramid_depth = pyramid_depth
-        self.crop_ratio = crop_ratio
-        self.border_threshold_ratio = border_threshold_ratio
-        self.contrast_low_percentile = contrast_low_percentile
-        self.contrast_high_percentile = contrast_high_percentile
-        self.min_pyramid_size = min_pyramid_size
         self.logger = logging.getLogger(self.__class__.__name__)
 
+    def _normalize(self, img: np.ndarray) -> np.ndarray:
+        """Scales image to 0-255 range. Essential for 16-bit TIFF vs 8-bit JPG."""
+        img_min, img_max = img.min(), img.max()
+        if img_max > img_min:
+            return ((img - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+        return np.zeros_like(img, dtype=np.uint8)
+
     def _get_features(self, img: np.ndarray) -> np.ndarray:
-        """Extracts edge features using Sobel gradients to focus on structure.
-        
-        Args:
-            img: Input grayscale image
-            
-        Returns:
-            Magnitude of gradients (edge strength map)
-        """
+        """Sobel gradients help align content rather than raw brightness."""
         img_f = img.astype(np.float32)
-        dx = cv2.Sobel(img_f, cv2.CV_32F, 1, 0, ksize=3)
-        dy = cv2.Sobel(img_f, cv2.CV_32F, 0, 1, ksize=3)
+        dx = ndimage.sobel(img_f, axis=1)
+        dy = ndimage.sobel(img_f, axis=0)
         return np.sqrt(dx**2 + dy**2)
 
     def _get_ncc_score(self, ref: np.ndarray, target: np.ndarray) -> float:
-        """Calculates the Normalized Cross-Correlation score.
-        
-        Args:
-            ref: Reference image (flattened internally)
-            target: Target image to compare
-            
-        Returns:
-            NCC score in [-1, 1], higher is better alignment
-        """
-        ref_f = ref.flatten()
-        target_f = target.flatten()
-        
+        """Normalized Cross-Correlation score."""
+        ref_f = ref.flatten().astype(np.float32)
+        target_f = target.flatten().astype(np.float32)
         ref_f -= np.mean(ref_f)
         target_f -= np.mean(target_f)
-        
         norm = np.sqrt(np.sum(ref_f**2) * np.sum(target_f**2))
-        if norm == 0:
-            return 0
-        return np.sum(ref_f * target_f) / norm
+        return np.sum(ref_f * target_f) / (norm + 1e-6)
 
-    def _align_exhaustive(self, ref: np.ndarray, target: np.ndarray, search_range: int) -> Tuple[int, int]:
-        """Exhaustive search for best alignment in a local window.
-        
-        Args:
-            ref: Reference image (after feature extraction)
-            target: Target image to align
-            search_range: Search radius in pixels
-            
-        Returns:
-            Tuple of (dy, dx) representing optimal offset
-        """
+    def _shift_image(self, img: np.ndarray, dy: int, dx: int) -> np.ndarray:
+        """Linear shift with zero-padding. Prevents the 'wrap-around' color edges."""
+        h, w = img.shape
+        res = np.zeros_like(img)
+        dst_y1, dst_y2 = max(0, dy), min(h, h + dy)
+        dst_x1, dst_x2 = max(0, dx), min(w, w + dx)
+        src_y1, src_y2 = max(0, -dy), min(h, h - dy)
+        src_x1, src_x2 = max(0, -dx), min(w, w - dx)
+        if dst_y1 < dst_y2 and dst_x1 < dst_x2:
+            res[dst_y1:dst_y2, dst_x1:dst_x2] = img[src_y1:src_y2, src_x1:src_x2]
+        return res
+
+    def _align_exhaustive(self, ref: np.ndarray, target: np.ndarray, s_range: int) -> Tuple[int, int]:
+        """The 'Single-Scale' method: finds best offset in a local window."""
         best_offset = (0, 0)
         max_score = -1.0
-        
         h, w = ref.shape
-        ch, cw = int(h * self.crop_ratio), int(w * self.crop_ratio)
-        ref_cropped = ref[ch:-ch, cw:-cw]
+        # Ignore messy 10% outer edges during scoring
+        ch, cw = int(h * 0.1), int(w * 0.1)
+        ref_c = ref[ch:-ch, cw:-cw]
         
-        for dy in range(-search_range, search_range + 1):
-            for dx in range(-search_range, search_range + 1):
-                shifted = np.roll(target, shift=(dy, dx), axis=(0, 1))
-                target_cropped = shifted[ch:-ch, cw:-cw]
-                
-                score = self._get_ncc_score(ref_cropped, target_cropped)
+        for dy in range(-s_range, s_range + 1):
+            for dx in range(-s_range, s_range + 1):
+                shifted = self._shift_image(target, dy, dx)
+                target_c = shifted[ch:-ch, cw:-cw]
+                score = self._get_ncc_score(ref_c, target_c)
                 if score > max_score:
-                    max_score = score
-                    best_offset = (dy, dx)
-                    
+                    max_score, best_offset = score, (dy, dx)
         return best_offset
 
     def _pyramid_align(self, ref: np.ndarray, target: np.ndarray, depth: int) -> Tuple[int, int]:
-        """Recursive multi-scale alignment using coarse-to-fine strategy.
+        """The 'Pyramid' method: recursive coarse-to-fine alignment."""
+        if depth == 0 or ref.shape[0] < 128:
+            return self._align_exhaustive(self._get_features(ref), self._get_features(target), self.search_range)
         
-        Args:
-            ref: Reference image
-            target: Target image to align
-            depth: Current pyramid depth (0 = finest level)
-            
-        Returns:
-            Tuple of (dy, dx) representing optimal offset at this scale
-        """
-        if depth == 0 or ref.shape[0] < self.min_pyramid_size:
-            ref_feat = self._get_features(ref)
-            target_feat = self._get_features(target)
-            return self._align_exhaustive(ref_feat, target_feat, self.search_range)
+        ref_s = zoom(ref, 0.5, order=1)
+        tgt_s = zoom(target, 0.5, order=1)
+        c_dy, c_dx = self._pyramid_align(ref_s, tgt_s, depth - 1)
         
-        # Downsample
-        ref_small = cv2.resize(ref, (0, 0), fx=0.5, fy=0.5)
-        target_small = cv2.resize(target, (0, 0), fx=0.5, fy=0.5)
-        
-        # Coarse alignment
-        coarse_dy, coarse_dx = self._pyramid_align(ref_small, target_small, depth - 1)
-        
-        # Scale back and refine
-        refined_dy, refined_dx = coarse_dy * 2, coarse_dx * 2
-        ref_feat = self._get_features(ref)
-        target_shifted = np.roll(target, shift=(refined_dy, refined_dx), axis=(0, 1))
-        target_feat = self._get_features(target_shifted)
-        
-        adj_dy, adj_dx = self._align_exhaustive(ref_feat, target_feat, search_range=2)
-        
-        return refined_dy + adj_dy, refined_dx + adj_dx
+        ref_dy, ref_dx = c_dy * 2, c_dx * 2
+        target_shifted = self._shift_image(target, ref_dy, ref_dx)
+        adj_dy, adj_dx = self._align_exhaustive(self._get_features(ref), self._get_features(target_shifted), 2)
+        return ref_dy + adj_dy, ref_dx + adj_dx
 
-    def _load_and_preprocess(self, img_path: str) -> Tuple[np.ndarray, np.ndarray]:
-        """Loads image, handles grayscale conversion, and normalization.
+    def process(self, img_path: str, output_path: str = "restored.jpg"):
+        self.logger.info(f"Processing: {img_path}")
+        img_raw = np.array(Image.open(img_path))
         
-        Args:
-            img_path: Path to input image
-            
-        Returns:
-            Tuple of (original_image, normalized_8bit_image)
-            
-        Raises:
-            FileNotFoundError: If image cannot be loaded
-            ValueError: If image has unexpected format
-        """
-        if not os.path.exists(img_path):
-            raise FileNotFoundError(f"Image file not found: {img_path}")
-            
-        img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            raise ValueError(f"Could not load image at {img_path} - possibly unsupported format")
+        # 1. Pre-process and Split
+        if len(img_raw.shape) == 3:
+            img_raw = np.dot(img_raw[...,:3], [0.299, 0.587, 0.114])
+        
+        img = self._normalize(img_raw)
+        h_part = img.shape[0] // 3
+       
+        # Plate order: Blue (Top), Green (Middle), Red (Bottom)
+        b, g, r = img[:h_part, :], img[h_part:2*h_part, :], img[2*h_part:3*h_part, :]
 
-        if len(img.shape) == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
-        # Normalize to 8-bit for internal alignment calculations
-        img_8u = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        return img, img_8u
+        # 2. Conditional Alignment Logic
+        is_tiff = img_path.lower().endswith(('.tif', '.tiff'))
+        if is_tiff:
+            self.logger.info("Using Multi-Scale Pyramid Alignment")
+            g_off = self._pyramid_align(b, g, self.pyramid_depth)
+            r_off = self._pyramid_align(b, r, self.pyramid_depth)
+        else:
+            self.logger.info("Using Single-Scale Exhaustive Alignment")
+            g_off = self._align_exhaustive(self._get_features(b), self._get_features(g), self.search_range)
+            r_off = self._align_exhaustive(self._get_features(b), self._get_features(r), self.search_range)
 
-    def _split_channels(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Splits the vertical plate into Blue, Green, and Red channels.
-        
-        Args:
-            img: Input image to split (height must be divisible by 3)
-            
-        Returns:
-            Tuple of (blue, green, red) channel images
-            
-        Raises:
-            ValueError: If image height is not suitable for splitting
-        """
-        if img.shape[0] < 3:
-            raise ValueError(f"Image too small to split: height={img.shape[0]}")
-        h = img.shape[0] // 3
-        return img[:h, :], img[h:2*h, :], img[2*h:3*h, :]
+        self.logger.info(f"Offsets: G{g_off} R{r_off}")
 
-    def _automatic_crop(self, img: np.ndarray, threshold_ratio: Optional[float] = None) -> np.ndarray:
-        """Removes borders by detecting high-variance edges typical of scanner/plate borders.
-        
-        Args:
-            img: Input BGR image
-            threshold_ratio: Max ratio of image to search from edges (uses instance default if None)
-            
-        Returns:
-            Cropped image with borders removed
-        """
-        if threshold_ratio is None:
-            threshold_ratio = self.border_threshold_ratio
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
-        
-        # Compute horizontal and vertical projections of gradients
-        dx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
-        dy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
-        
-        v_grad = np.mean(dx, axis=0)
-        h_grad = np.mean(dy, axis=1)
-        
-        # Find boundaries where gradient intensity drops (moving from messy border to image)
-        def find_cut(arr: np.ndarray, reverse: bool = False) -> int:
-            limit = int(len(arr) * threshold_ratio)
-            search_area = arr[:limit] if not reverse else arr[-limit:][::-1]
-            # Simple heuristic: find first peak or steady region
-            threshold = np.mean(arr) * 0.8
-            for i, val in enumerate(search_area):
-                if val > threshold: return i if not reverse else len(arr) - i
-            return 0 if not reverse else len(arr)
+        # 3. Shift and Merge
+        g_final = self._shift_image(g, g_off[0], g_off[1])
+        r_final = self._shift_image(r, r_off[0], r_off[1])
+        result = np.stack([r_final, g_final, b], axis=-1)
 
-        left = find_cut(v_grad)
-        right = find_cut(v_grad, True)
-        top = find_cut(h_grad)
-        bottom = find_cut(h_grad, True)
+        # 4. Clean up the edges (Intersection Crop)
+        h, w, _ = result.shape
+        top, bottom = max(0, g_off[0], r_off[0]), h + min(0, g_off[0], r_off[0])
+        left, right = max(0, g_off[1], r_off[1]), w + min(0, g_off[1], r_off[1])
         
-        return img[top:bottom, left:right]
+        # Add 5% safety crop to remove physical plate borders
+        shave_h, shave_w = int(h * 0.05), int(w * 0.05)
+        result = result[top+shave_h : bottom-shave_h, left+shave_w : right-shave_w]
 
-    def _apply_white_balance(self, img: np.ndarray) -> np.ndarray:
-        """Applies 'Gray World' white balance adjustment.
-        
-        Args:
-            img: Input BGR image
-            
-        Returns:
-            White-balanced image
-        """
-        result = img.astype(np.float32)
-        avg_b = np.mean(result[:,:,0])
-        avg_g = np.mean(result[:,:,1])
-        avg_r = np.mean(result[:,:,2])
-        avg_gray = (avg_b + avg_g + avg_r) / 3.0
-        
-        result[:,:,0] *= (avg_gray / avg_b)
-        result[:,:,1] *= (avg_gray / avg_g)
-        result[:,:,2] *= (avg_gray / avg_r)
-        
-        return np.clip(result, 0, 255).astype(np.uint8)
-
-    def _apply_contrast(self, img: np.ndarray, low_perc: Optional[float] = None, high_perc: Optional[float] = None) -> np.ndarray:
-        """Automatically rescales contrast using percentile-based clipping.
-        
-        Args:
-            img: Input BGR image
-            low_perc: Lower percentile for clipping (uses instance default if None)
-            high_perc: Upper percentile for clipping (uses instance default if None)
-            
-        Returns:
-            Contrast-enhanced image
-        """
-        if low_perc is None:
-            low_perc = self.contrast_low_percentile
-        if high_perc is None:
-            high_perc = self.contrast_high_percentile
-        result = np.zeros_like(img, dtype=np.float32)
+        # 5. Final Contrast Enhancement
         for i in range(3):
-            low = np.percentile(img[:,:,i], low_perc)
-            high = np.percentile(img[:,:,i], high_perc)
-            result[:,:,i] = (img[:,:,i].astype(np.float32) - low) / (high - low + 1e-5)
-            
-        result = np.clip(result * 255, 0, 255).astype(np.uint8)
+            low, high = np.percentile(result[...,i], (2, 98))
+            if high > low:
+                result[...,i] = np.clip((result[...,i].astype(np.float32) - low) / (high - low) * 255, 0, 255)
+        
+        result = result.astype(np.uint8)
+        Image.fromarray(result).save(output_path, quality=95)
+        self.logger.info(f"Saved: {output_path}")
         return result
 
-    def _finalize_image(self, b: np.ndarray, g: np.ndarray, r: np.ndarray) -> np.ndarray:
-        """Merges channels and applies automatic enhancements.
-        
-        Args:
-            b: Blue channel
-            g: Green channel
-            r: Red channel
-            
-        Returns:
-            Final enhanced BGR image
-        """
-        # 1. Merge
-        merged = cv2.merge([b, g, r])
-        
-        # 2. Normalize to 8-bit for internal processing
-        merged_8u = cv2.normalize(merged, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        
-        # 3. Apply enhancement pipeline
-        self.logger.debug("Applying automatic white balance")
-        balanced = self._apply_white_balance(merged_8u)
-        
-        self.logger.debug("Applying automatic contrast")
-        contrasted = self._apply_contrast(balanced)
-        
-        self.logger.debug("Applying automatic cropping")
-        final = self._automatic_crop(contrasted)
-        
-        return final
-
-
-    def _align_single_scale(self, ref: np.ndarray, target: np.ndarray) -> Tuple[int, int]:
-        """Simple exhaustive search without pyramid (for small images).
-        
-        Args:
-            ref: Reference image
-            target: Target image to align
-            
-        Returns:
-            Tuple of (dy, dx) representing optimal offset
-        """
-        ref_feat = self._get_features(ref)
-        target_feat = self._get_features(target)
-        return self._align_exhaustive(ref_feat, target_feat, self.search_range)
-    
-    def process(self, img_path: str, output_path: str = "restored.jpg") -> np.ndarray:
-        """Main pipeline: Load, Split, Align, Merge, Enhance, Save.
-        
-        Args:
-            img_path: Path to input glass plate image
-            output_path: Path where restored image will be saved
-            
-        Returns:
-            Final processed image as numpy array
-            
-        Raises:
-            FileNotFoundError: If input image doesn't exist
-            ValueError: If image format is invalid
-        """
-        self.logger.info(f"Processing: {img_path}")
-        
-        try:
-            # 1. Load data
-            original_img, processing_img = self._load_and_preprocess(img_path)
-
-            # 2. Split for both processing (8-bit) and final output (original depth)
-            b_proc, g_proc, r_proc = self._split_channels(processing_img)
-            b_orig, g_orig, r_orig = self._split_channels(original_img)
-
-            # 3. Align (Calculate offsets using 8-bit features)
-            self.logger.info("Aligning channels...")
-            
-            if img_path.lower().endswith(('.jpg', '.jpeg')):
-                self.logger.info("Using single-scale alignment for JPEG")
-                g_off = self._align_single_scale(b_proc, g_proc)
-                r_off = self._align_single_scale(b_proc, r_proc)
-            else:
-                self.logger.info("Using multi-scale pyramid alignment")
-                g_off = self._pyramid_align(b_proc, g_proc, self.pyramid_depth)
-                r_off = self._pyramid_align(b_proc, r_proc, self.pyramid_depth)
-            self.logger.info(f"Offsets found: Green{g_off}, Red{r_off}")
-
-            # 4. Reconstruct using offsets applied to original channels
-            h, w = g_orig.shape
-            g_final = cv2.warpAffine(g_orig.astype(np.float32), 
-                                      np.float32([[1, 0, g_off[1]], [0, 1, g_off[0]]]),
-                                      (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            r_final = cv2.warpAffine(r_orig.astype(np.float32), 
-                                      np.float32([[1, 0, r_off[1]], [0, 1, r_off[0]]]),
-                                      (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            g_final = g_final.astype(g_orig.dtype)
-            r_final = r_final.astype(r_orig.dtype)
-            
-            # 5. Finalize (Merge + Auto-Crop + Contrast + WB)
-            result = self._finalize_image(b_orig, g_final, r_final)
-            
-            # 6. Save output
-            success = cv2.imwrite(output_path, result)
-            if not success:
-                raise IOError(f"Failed to save image to {output_path}")
-                
-            self.logger.info(f"Saved: {output_path}")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Error processing {img_path}: {str(e)}")
-            raise
-
-    def batch_process(self, input_dir: str, output_dir: str, file_list: Optional[List[str]] = None) -> List[str]:
-        """Processes all images in input_dir or a specific subset provided in file_list.
-        
-        Args:
-            input_dir: Directory containing input images
-            output_dir: Directory where restored images will be saved
-            file_list: Optional list of specific filenames to process
-            
-        Returns:
-            List of successfully processed output file paths
-            
-        Raises:
-            ValueError: If input_dir doesn't exist
-        """
-        if not os.path.exists(input_dir):
-            raise ValueError(f"Input directory does not exist: {input_dir}")
-            
-        if not os.path.exists(output_dir):
+    def batch_process(self, input_dir: str, output_dir: str, file_list: list = None):
+        """Process all images in input_dir, or specific files if file_list is provided."""
+        if not os.path.exists(output_dir): 
             os.makedirs(output_dir)
-            self.logger.info(f"Created output directory: {output_dir}")
-
+        
         if file_list:
             files = [os.path.join(input_dir, f) for f in file_list]
         else:
-            extensions = ['*.tif', '*.tiff', '*.jpg', '*.jpeg', '*.png']
+            exts = ['*.jpg', '*.jpeg', '*.tif', '*.tiff', '*.png']
             files = []
-            for ext in extensions:
-                files.extend(glob.glob(os.path.join(input_dir, ext)))
-                files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
-
-        self.logger.info(f"Found {len(files)} files to process")
+            for e in exts:
+                files.extend(glob.glob(os.path.join(input_dir, e)))
+                files.extend(glob.glob(os.path.join(input_dir, e.upper())))
         
-        successful_outputs = []
-        failed_count = 0
-
-        for f_path in files:
-            if not os.path.isfile(f_path):
-                self.logger.warning(f"Skipping: {f_path} is not a valid file")
-                continue
-
-            base_name = os.path.basename(f_path)
-            name_part, _ = os.path.splitext(base_name)
-            out_path = os.path.join(output_dir, f"{name_part}_restored.jpg")
-            
+        for file in files:
+            name = os.path.basename(file).rsplit('.', 1)[0]
+            out = os.path.join(output_dir, f"{name}_restored.jpg")
             try:
-                self.process(f_path, out_path)
-                successful_outputs.append(out_path)
+                self.process(file, out)
             except Exception as e:
-                self.logger.error(f"Failed to process {base_name}: {e}")
-                failed_count += 1
-                
-        self.logger.info(f"Batch complete: {len(successful_outputs)} successful, {failed_count} failed")
-        return successful_outputs
+                self.logger.error(f"Error processing {file}: {e}")
 
 if __name__ == "__main__":
-    aligner = ProkudinGorskiiAligner(
-        search_range=15,
-        pyramid_depth=5,
-        crop_ratio=0.15
-    )
+    aligner = ProkudinGorskiiAligner()
     
-    logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO)
+    # Path configuration
+    INPUT_FOLDER = "images"
+    OUTPUT_FOLDER = "output"
     
-    IMAGES_DIR = "images"
-    OUTPUT_DIR = "output"
-    
-    try:
-        # Example 1: Process everything in the folder
-        if os.path.exists(IMAGES_DIR):
-            aligner.batch_process(IMAGES_DIR, OUTPUT_DIR)
-        else:
-            logger.warning(f"Directory '{IMAGES_DIR}' not found")
-            
-        # Example 2: Process a specific limited array of images
-        # subset = ["melons.tif"]  # Add more filenames here as needed
-        # aligner.batch_process(IMAGES_DIR, OUTPUT_DIR, file_list=subset)
+    if os.path.exists(INPUT_FOLDER):
+        # Process all images in folder
+        aligner.batch_process(INPUT_FOLDER, OUTPUT_FOLDER)
         
-    except Exception as e:
-        logger.error(f"Batch processing failed: {e}")
-        raise
+        # Or process only specific images (uncomment to use):
+        # subset = ["siren.tif", "cathedral.jpg"]
+        # aligner.batch_process(INPUT_FOLDER, OUTPUT_FOLDER, file_list=subset)
+    else:
+        print(f"Folder '{INPUT_FOLDER}' not found. Please update the path in the script.")
