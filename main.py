@@ -2,6 +2,7 @@ import numpy as np
 import os
 import glob
 import logging
+import time
 from typing import Tuple
 from PIL import Image
 from scipy import ndimage
@@ -83,6 +84,7 @@ class ProkudinGorskiiAligner:
         return ref_dy + adj_dy, ref_dx + adj_dx
 
     def process(self, img_path: str, output_path: str = "restored.jpg"):
+        start_time = time.time()
         self.logger.info(f"Processing: {img_path}")
         img_raw = np.array(Image.open(img_path))
         
@@ -131,7 +133,9 @@ class ProkudinGorskiiAligner:
         
         result = result.astype(np.uint8)
         Image.fromarray(result).save(output_path, quality=95)
-        self.logger.info(f"Saved: {output_path}")
+        
+        elapsed_time = time.time() - start_time
+        self.logger.info(f"Saved: {output_path} (took {elapsed_time:.1f}s)")
         return result
 
     def batch_process(self, input_dir: str, output_dir: str, file_list: list = None):

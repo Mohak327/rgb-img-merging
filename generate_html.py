@@ -11,19 +11,19 @@ jpeg_files = [
         'name': 'cathedral.jpg',
         'g_offset': '(5, 2)',
         'r_offset': '(12, 3)',
-        'time': '0.8s'
+        'time': '0.5s'
     },
     {
         'name': 'monastery.jpg', 
         'g_offset': '(-3, 2)',
         'r_offset': '(3, 2)',
-        'time': '0.7s'
+        'time': '0.5s'
     },
     {
         'name': 'tobolsk.jpg',
         'g_offset': '(3, 3)', 
         'r_offset': '(6, 3)',
-        'time': '0.9s'
+        'time': '0.7s'
     }
 ]
 
@@ -31,79 +31,79 @@ jpeg_files = [
 main_tiff_files = [
     {
         'name': 'church.tif',
-        'g_offset': '(-1, -5)',
-        'r_offset': '(54, -6)', 
-        'time': '13.9s',
+        'g_offset': '(25, 4)',
+        'r_offset': '(58, -4)', 
+        'time': '20.1s',
         'note': ''
     },
     {
         'name': 'emir.tif',
-        'g_offset': '(12, 8)',
-        'r_offset': '(109, 17)', 
-        'time': '12.3s',
+        'g_offset': '(49, 24)',
+        'r_offset': '(107, 40)', 
+        'time': '18.7s',
         'note': 'Used edge-based features'
     },
     {
         'name': 'harvesters.tif',
-        'g_offset': '(119, -3)',
-        'r_offset': '(121, 7)',
-        'time': '15.7s',
+        'g_offset': '(60, 17)',
+        'r_offset': '(124, 14)',
+        'time': '11.5s',
         'note': ''
     },
     {
         'name': 'icon.tif',
-        'g_offset': '(41, 16)',
-        'r_offset': '(90, 22)',
-        'time': '11.2s',
+        'g_offset': '(42, 17)',
+        'r_offset': '(90, 23)',
+        'time': '17.3s',
         'note': ''
     },
     {
         'name': 'italil.tif',
-        'g_offset': '(38, 18)', 
-        'r_offset': '(77, 34)',
-        'time': '13.1s',
+        'g_offset': '(38, 22)', 
+        'r_offset': '(77, 36)',
+        'time': '12.6s',
         'note': ''
     },
     {
         'name': 'lastochikino.tif',
         'g_offset': '(-3, -2)',
-        'r_offset': '(143, -3)',
-        'time': '16.4s', 
+        'r_offset': '(76, -8)',
+        'time': '11.2s', 
         'note': ''
     },
     {
         'name': 'lugano.tif',
-        'g_offset': '(23, -11)',
-        'r_offset': '(92, -28)',
-        'time': '14.8s',
+        'g_offset': '(41, -17)',
+        'r_offset': '(92, -29)',
+        'time': '10.8s',
         'note': ''
     },
         {
         'name': 'melons.tif',
         'g_offset': '(80, 10)',
         'r_offset': '(177, 13)',
-        'time': '9.6s',
+        'time': '10.4s',
         'note': ''
     },
     {
         'name': 'self_portrait.tif',
-        'g_offset': '(71, -1)',
-        'r_offset': '(151, -4)', 
-        'time': '13.9s',
+        'g_offset': '(78, 29)',
+        'r_offset': '(176, 37)', 
+        'time': '10.3s',
         'note': ''
     },
     {
         'name': 'siren.tif',
-        'g_offset': '(48, -7)',
-        'r_offset': '(99, -21)',
-        'time': '19.1s',
+        'g_offset': '(49, -6)',
+        'r_offset': '(96, -24)',
+        'time': '10.3s',
         'note': ''
     },
     {
         'name': 'three_generations.tif',
-        'g_offset': '(52, 5)',
-        'r_offset': '(110, 7)',
-        'time': '17.2s',
+        'g_offset': '(54, 12)',
+        'r_offset': '(111, 9)',
+        'time': '14.1s',
         'note': ''
     }
 ]
@@ -112,23 +112,23 @@ main_tiff_files = [
 master_pnp_files = [
     {
         'name': 'master-pnp-prok-00000-00086a.tif',
-        'g_offset': '(42, 6)',
-        'r_offset': '(87, 32)',
-        'time': '18.2s',
+        'g_offset': '(57, 32)',
+        'r_offset': '(129, 49)',
+        'time': '10.3s',
         'note': 'Library of Congress collection'
     },
     {
         'name': 'master-pnp-prok-00100-00116a.tif', 
-        'g_offset': '(33, 0)',
-        'r_offset': '(67, -26)',
-        'time': '16.7s',
+        'g_offset': '(75, 9)',
+        'r_offset': '(158, 16)',
+        'time': '15.4s',
         'note': 'Library of Congress collection'
     },
     {
         'name': 'master-pnp-prok-00100-00187u.tif',
-        'g_offset': '(28, 12)',
-        'r_offset': '(74, 18)',
-        'time': '15.3s',
+        'g_offset': '(33, -11)',
+        'r_offset': '(140, -26)',
+        'time': '10.5s',
         'note': 'Library of Congress collection'
     }
 ]
@@ -334,7 +334,6 @@ def generate_html():
                 <li><strong>{len(master_pnp_files)} additional master-pnp files</strong> from Library of Congress</li>
                 <li><strong>Total: {len(jpeg_files) + len(main_tiff_files) + len(master_pnp_files)} images</strong> successfully processed</li>
             </ul>
-            <p><strong>Success Rate:</strong> {len(jpeg_files) + len(main_tiff_files) + len(master_pnp_files) - 1}/{len(jpeg_files) + len(main_tiff_files) + len(master_pnp_files)} images - Minor ghosting in harvesters.tif due to people movement</p>
         </div>
     </div>
 
