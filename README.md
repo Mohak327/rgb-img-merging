@@ -22,7 +22,7 @@ The Prokudin-Gorskii collection contains early color photographs taken by Sergei
 ## Requirements
 
 ```bash
-pip install opencv-python numpy
+pip install Pillow scipy numpy
 ```
 
 ## Usage
@@ -66,13 +66,19 @@ python main.py
 ### Multi-Scale Pyramid Alignment (TIFFs)
 - Used for large images (emir.tif, harvesters.tif, etc.)
 - Recursive coarse-to-fine alignment across 5 pyramid levels
-- 2x downsampling at each level using OpenCV INTER_AREA
+- 2x downsampling at each level using scipy.ndimage.zoom
 - Refines alignment with ±2 pixel search at each level
 
 ### Edge Features
-- Sobel gradient magnitude: `sqrt(dx² + dy²)`
+- Sobel gradient magnitude: `sqrt(dx² + dy²)` using scipy.ndimage.sobel
 - Robust to brightness differences between channels
 - Essential for problematic images like emir.tif
+
+### Implementation
+- Image I/O: PIL (Pillow) for reading and writing images
+- Edge detection: scipy.ndimage.sobel for gradient computation
+- Image resizing: scipy.ndimage.zoom for pyramid downsampling
+- Normalization: numpy operations for 8-bit conversion
 
 ## File Structure
 
